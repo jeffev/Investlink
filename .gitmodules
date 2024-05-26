@@ -1,0 +1,9 @@
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/jeffev/investlink_frontend.git
+[submodule "data_science_pipeline"]
+	path = data_science_pipeline
+	url = https://github.com/jeffev/investlink_data_science_pipeline.git
+[submodule "backend"]
+	path = backend
+	url = https://github.com/jeffev/investlink_backend.git
