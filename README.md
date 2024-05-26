@@ -13,7 +13,7 @@ O InvestLink é um projeto que visa analisar indicadores financeiros das ações
 O projeto utiliza o Docker Compose para facilitar a execução e gerenciamento dos serviços. Para iniciar o projeto, execute o seguinte comando na raiz do repositório:
 
 ```bash
-docker-compose up
+docker-compose up --build
 ```
 
 Este comando iniciará os contêineres necessários para executar o frontend, backend e pipeline de dados.
