@@ -6,4 +6,4 @@ git clone https://github.com/jeffev/investlink_frontend.git
 git clone https://github.com/jeffev/investlink_data_science_pipeline.git
 
 # Inicia o docker-compose
-docker-compose -f ../docker-compose.yml up --build
+docker-compose -f ../docker-compose up --build
