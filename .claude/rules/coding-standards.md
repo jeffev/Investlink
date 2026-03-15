@@ -78,3 +78,20 @@ def view_stock(ticker):
 - **Sem `print()` em produção** — usar `logging.error()` nos serviços
 - **Sem funções com mais de 3 parâmetros** sem justificativa — use dict ou objeto
 - **Componentes React > 200 linhas** devem ser candidatos a extração
+
+---
+
+## Formatação obrigatória antes de commitar (backend Python)
+
+**SEMPRE executar antes de qualquer commit no backend:**
+
+```bash
+cd /d/Investlink/backend
+python -m black .
+python -m flake8 app/ tests/ migrations/
+```
+
+- O CI usa `black --check .` — qualquer arquivo fora do padrão quebra o pipeline
+- `black` reformata automaticamente; `flake8` apenas reporta
+- Arquivos de teste também são verificados — não apenas `app/`
+- Se não tiver `black` instalado: `pip install black flake8`
