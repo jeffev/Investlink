@@ -41,5 +41,21 @@ services:
     depends_on:
       - backend
 
+  data_science:
+    build:
+      context: ./data_science_pipeline
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/investlink
+    volumes:
+      - ./data_science_pipeline/models:/app/models
+      - ./data_science_pipeline/data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - tools
+    restart: "no"
+
 volumes:
   postgres_data:
