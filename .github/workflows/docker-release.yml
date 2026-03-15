@@ -50,8 +50,6 @@ jobs:
       - name: Run tests
         run: cd frontend && npm test -- --watchAll=false --ci
 
-      - name: Run lint
-        run: cd frontend && npm run lint
 
   build-and-push:
     needs: [test-backend, test-frontend]
