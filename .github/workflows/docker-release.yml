@@ -47,12 +47,35 @@ jobs:
       - name: Install dependencies
         run: cd frontend && npm ci
 
-      - name: Run tests
+      - name: Run unit tests
         run: cd frontend && npm test -- --watchAll=false --ci
 
+  test-e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Cypress run
+        uses: cypress-io/github-action@v6
+        with:
+          start: npm start
+          wait-on: http://localhost:3000
+          wait-on-timeout: 120
+          working-directory: frontend
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-screenshots
+          path: frontend/cypress/screenshots
 
   build-and-push:
-    needs: [test-backend, test-frontend]
+    needs: [test-backend, test-frontend, test-e2e]
     runs-on: ubuntu-latest
 
     steps:
