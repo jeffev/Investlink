@@ -74,17 +74,30 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install dependencies
+        run: cd frontend && npm ci
+
+      # O `start`/`wait-on` da própria ação abortava em 10 ms com "Socket
+      # closed before the connection was established", sem nunca esperar os
+      # 120 segundos pedidos nem deixar no log uma linha do servidor. Subir e
+      # esperar aqui custa duas linhas e mostra o que aconteceu: se o servidor
+      # morrer, o log dele está no passo seguinte.
+      - name: Subir o servidor de desenvolvimento
+        run: cd frontend && npm start > /tmp/dev-server.log 2>&1 &
+
+      - name: Esperar o servidor atender
+        run: |
+          timeout 180 bash -c 'until curl -sf http://127.0.0.1:3000 > /dev/null; do sleep 2; done'             || { echo "::error::servidor não atendeu em 180s"; cat /tmp/dev-server.log; exit 1; }
+
       - name: Cypress run
         uses: cypress-io/github-action@v6
         with:
-          start: npm start
-          # 127.0.0.1 e não `localhost`: desde o Node 17 o nome resolve para
-          # ::1 primeiro, o servidor escuta só em IPv4, e a espera não aguarda
-          # os 120 segundos — morre em milissegundos com "Socket closed before
-          # the connection was established".
-          wait-on: http://127.0.0.1:3000
-          wait-on-timeout: 120
+          install: false
           working-directory: frontend
+
+      - name: Log do servidor em caso de falha
+        if: failure()
+        run: cat /tmp/dev-server.log || true
 
       - name: Upload screenshots on failure
         if: failure()
