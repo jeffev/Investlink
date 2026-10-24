@@ -66,11 +66,23 @@ jobs:
         with:
           submodules: true
 
+      # O mesmo Node do job de testes unitários: sem fixar, o runner entrega a
+      # versão que estiver na imagem do dia, e o servidor do react-scripts não
+      # atravessa troca de major sem aviso.
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Cypress run
         uses: cypress-io/github-action@v6
         with:
           start: npm start
-          wait-on: http://localhost:3000
+          # 127.0.0.1 e não `localhost`: desde o Node 17 o nome resolve para
+          # ::1 primeiro, o servidor escuta só em IPv4, e a espera não aguarda
+          # os 120 segundos — morre em milissegundos com "Socket closed before
+          # the connection was established".
+          wait-on: http://127.0.0.1:3000
           wait-on-timeout: 120
           working-directory: frontend
 
