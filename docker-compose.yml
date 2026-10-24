@@ -42,6 +42,23 @@ services:
     depends_on:
       - backend
 
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Processo separado de propósito: o gunicorn sobe três workers, e um
+    # agendador dentro deles dispararia a mesma atualização três vezes,
+    # concorrendo pela mesma tabela.
+    entrypoint: ["python", "app/jobs/scheduler.py"]
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/investlink
+      SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-America/Sao_Paulo}
+      DAILY_REFRESH_HOUR: ${DAILY_REFRESH_HOUR:-21}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
   data_science:
     build:
       context: ./data_science_pipeline

@@ -1,0 +1,109 @@
+# Produção — consome as imagens já publicadas no GHCR pelo docker-release.yml.
+#
+# Diferente do docker-compose.yml, aqui nada é construído: o servidor baixa a
+# imagem que passou pelos testes no CI. O que é construído no servidor não é o
+# que foi testado.
+#
+# Uso no servidor:
+#   IMAGE_TAG=<sha> GHCR_OWNER=<owner> docker compose -f docker-compose.prod.yml up -d
+#
+# As variáveis abaixo vêm do arquivo `.env` que fica NO SERVIDOR e nunca é
+# versionado nem enviado pelo deploy. As marcadas com `:?` derrubam o comando
+# quando faltam — subir com senha vazia é pior que não subir.
+
+services:
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env do servidor}
+      POSTGRES_DB: investlink
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Sem `ports`: o banco só é alcançável pela rede interna do compose.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/${GHCR_OWNER:?defina GHCR_OWNER}/investlink-backend:${IMAGE_TAG:-latest}
+    environment:
+      FLASK_ENV: production
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/investlink
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?defina JWT_SECRET_KEY no .env do servidor}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?defina ADMIN_PASSWORD no .env do servidor}
+      NEWS_API_KEY: ${NEWS_API_KEY:-}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+    ports:
+      # Exposto porque o REACT_APP_API_URL é compilado no bundle e o navegador
+      # chama a API direto. Com um proxy TLS na frente, troque por "127.0.0.1:5000:5000".
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen("http://localhost:5000/health").status == 200 else 1)
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  frontend:
+    image: ghcr.io/${GHCR_OWNER:?defina GHCR_OWNER}/investlink-frontend:${IMAGE_TAG:-latest}
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  scheduler:
+    image: ghcr.io/${GHCR_OWNER:?defina GHCR_OWNER}/investlink-backend:${IMAGE_TAG:-latest}
+    # Mesma imagem do backend, outro comando: um processo só, fora do
+    # gunicorn, para a rotina não disparar uma vez por worker.
+    entrypoint: ["python", "app/jobs/scheduler.py"]
+    environment:
+      FLASK_ENV: production
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/investlink
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-America/Sao_Paulo}
+      DAILY_REFRESH_HOUR: ${DAILY_REFRESH_HOUR:-21}
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        # `service_healthy`, não `service_started`: o entrypoint do backend
+        # aplica as migrações antes de servir, e o agendador não as aplica.
+        # Subir antes disso faz a rotina rodar contra um schema velho — e a
+        # falha aparece como "coluna não existe" no meio da madrugada.
+        condition: service_healthy
+    restart: unless-stopped
+
+  data_science:
+    image: ghcr.io/${GHCR_OWNER:?defina GHCR_OWNER}/investlink-data-science:${IMAGE_TAG:-latest}
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/investlink
+    depends_on:
+      db:
+        condition: service_healthy
+    # Roda sob demanda (`--profile tools run --rm data_science`), não como serviço.
+    profiles:
+      - tools
+    restart: "no"
+
+volumes:
+  postgres_data:

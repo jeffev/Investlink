@@ -25,10 +25,17 @@ jobs:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: pip install -r backend/requirements.txt
+        run: pip install -r backend/requirements-dev.txt
 
       - name: Run tests
         run: PYTHONPATH=backend/app python -m pytest backend/tests/unit/ -v
+
+      # Postgres de verdade, num contêiner descartável: é o que prova a cadeia
+      # de migrações e o que o SQLite dos unitários resolve ao contrário
+      # (NULLS LAST, ON CONFLICT). Roda a partir de backend/ porque o Alembic
+      # procura o diretório `migrations` relativo ao diretório atual.
+      - name: Run integration tests
+        run: cd backend && PYTHONPATH=app python -m pytest tests/integration -v
 
   test-frontend:
     runs-on: ubuntu-latest
@@ -78,11 +85,20 @@ jobs:
     needs: [test-backend, test-frontend, test-e2e]
     runs-on: ubuntu-latest
 
+    outputs:
+      owner: ${{ steps.owner.outputs.value }}
+      image_tag: ${{ github.sha }}
+
     steps:
       - name: Checkout with submodules
         uses: actions/checkout@v4
         with:
           submodules: true
+
+      # GHCR só aceita namespace em minúsculas; o login do GitHub pode ter maiúsculas.
+      - name: Normalizar owner do registry
+        id: owner
+        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -97,13 +113,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Cada imagem sai com a tag do commit além de `latest`: é a tag do commit
+      # que o deploy usa, porque `latest` não diz qual versão está no ar nem
+      # dá para onde voltar num rollback.
       - name: Build and push backend image
         uses: docker/build-push-action@v5
         with:
           context: ./backend
           file: ./backend/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/investlink-backend:latest
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.value }}/investlink-backend:latest
+            ghcr.io/${{ steps.owner.outputs.value }}/investlink-backend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -113,8 +134,93 @@ jobs:
           context: ./frontend
           file: ./frontend/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/investlink-frontend:latest
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.value }}/investlink-frontend:latest
+            ghcr.io/${{ steps.owner.outputs.value }}/investlink-frontend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
             REACT_APP_API_URL=${{ vars.REACT_APP_API_URL }}
+
+      - name: Build and push data science image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./data_science_pipeline
+          file: ./data_science_pipeline/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.value }}/investlink-data-science:latest
+            ghcr.io/${{ steps.owner.outputs.value }}/investlink-data-science:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Deploy fica desligado até `DEPLOY_ENABLED` valer 'true' nas variáveis do
+  # repositório. Sem isso, um merge em main publicaria imagem e mexeria num
+  # servidor que talvez ainda nem exista.
+  deploy:
+    needs: build-and-push
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+
+    # Dois deploys simultâneos no mesmo servidor disputam o mesmo compose e a
+    # mesma migração; a fila espera em vez de cancelar para não deixar pela metade.
+    concurrency:
+      group: investlink-deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Preparar acesso SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+            echo "::error::DEPLOY_ENABLED está ligado, mas DEPLOY_SSH_KEY e/ou DEPLOY_KNOWN_HOSTS não estão configurados."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # A chave do host vem de um secret em vez de ssh-keyscan: confiar no
+          # que o servidor apresentar na hora aceitaria um man-in-the-middle.
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Enviar o compose de produção
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+        run: |
+          scp -i ~/.ssh/deploy_key -P "$DEPLOY_PORT" \
+            docker-compose.prod.yml \
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.prod.yml"
+
+      - name: Subir a nova versão
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+          GHCR_OWNER: ${{ needs.build-and-push.outputs.owner }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          GHCR_USER: ${{ github.actor }}
+          # Opcional: só é necessário enquanto os pacotes forem privados.
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          # O token vai pelo stdin, junto do script: passado como argumento
+          # ele ficaria visível em qualquer ps rodado no servidor durante o deploy.
+          {
+            echo "export GHCR_USER='$GHCR_USER' GHCR_TOKEN='$GHCR_TOKEN'"
+            cat Scripts/deploy_remote.sh
+          } | ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_TAG='$IMAGE_TAG' GHCR_OWNER='$GHCR_OWNER' bash -s"
+
+      - name: Remover a chave do runner
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
